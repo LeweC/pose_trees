@@ -5,7 +5,6 @@ All inplementation are inlcuded as header files for a 3D Pose. This repo also in
 ## Short Overview see Thesis for more information
 This repository includes implementations to test NNS times in N-dimensional axis-alligned trees for poses(position + orientation). This includes 5 approaches to with different aspects to compensate the continouty property of Euler Angles.
 
-Add Image...
-
-Best approaches...
-Use quaternion or AlgoV2 depending on the usecase.
+![Plot of NNS times of approches](https://github.com/LeweC/pose_trees/blob/master/docs/IncreasingPoses.png "tPlot of NNS times of approches")
+This experiments were done with: Poses: 30,000 Tree depth: 9 Max. poses in leaf nodes: 21 and K = 3.<br />
+For more and different tests see BA.
