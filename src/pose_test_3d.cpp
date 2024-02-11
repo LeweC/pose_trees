@@ -1,13 +1,9 @@
 #include <chrono>
 #include <random>
 #include <Eigen/Geometry>
-#include <iostream>
-#include <vector>
-#include <math.h>
-#include <array>
 
-#include "pose_trees/Octree/octree.h"
-#include "pose_trees/Octree/octree_container.h"
+#include "../include/pose_trees/baseline_rotational_octree.hpp"
+#include "../include/pose_trees/twin_octrees.hpp"
 #include "../include/pose_trees/CSVWriter.h"
 
 auto now = std::chrono::system_clock::now();
@@ -15,8 +11,7 @@ auto UTC = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch
 
 std::string save_path = "";
 
-//using namespace std;
-double inner_product(std::array<double, 7> quat1, std::array<double, 7> quat2)
+double inner_product(array<double, 7> quat1, array<double, 7> quat2)
 {
     double product = 0.0;
     for (size_t iDim = 3; iDim < 7; ++iDim)
@@ -61,10 +56,10 @@ double rotaional_distance(double angleX1, double angleY1, double angleZ1, double
     return ((diff_x + diff_y + diff_z) / 3);
 }
 
-std::array<double, 3> angle_to_rad(std::array<double, 3> pose)
+array<double, 3> angle_to_rad(array<double, 3> pose)
 {
     constexpr double pi = 3.14159265358979323846;
-    std::array<double, 3> result;
+    array<double, 3> result;
     for (size_t i = 0; i < 3; i++)
     {
         result[i] = pose[i] * pi / 180;
@@ -84,12 +79,12 @@ Eigen::Quaternionf normalize_quaternion(Eigen::Quaternionf q)
     return normalized_q;
 }
 
-std::vector<std::array<double, 7>> euler_to_quat(std::vector<std::array<double, 6>> poses)
+vector<array<double, 7>> euler_to_quat(vector<array<double, 6>> poses)
 {
-    std::vector<std::array<double, 7>> quat_poses;
+    vector<array<double, 7>> quat_poses;
     for (size_t i = 0; i < poses.size(); i++)
     {
-        std::array<double, 3> angle_in_rad = angle_to_rad({poses[i][3], poses[i][4], poses[i][5]});
+        array<double, 3> angle_in_rad = angle_to_rad({poses[i][3], poses[i][4], poses[i][5]});
         Eigen::Quaternionf q;
         q = Eigen::AngleAxisf(angle_in_rad[0], Eigen::Vector3f::UnitX()) * Eigen::AngleAxisf(angle_in_rad[1], Eigen::Vector3f::UnitY()) * Eigen::AngleAxisf(angle_in_rad[2], Eigen::Vector3f::UnitZ());
         Eigen::Quaternionf normalized_q = normalize_quaternion(q);
@@ -117,14 +112,85 @@ void test_setup(int number_of_poses, int tree_depth, int number_of_neighbors_k, 
 
     std::uniform_real_distribution<double> search_rot_dist(2.0, 358.0);
 
-    std::vector<std::array<double, 6>> poses;
+    vector<array<double, 6>> poses;
 
     for (size_t i = 0; i < number_of_poses; i++)
     {
-        std::array<double, 6> pose_3d = {trans_dist(mt), trans_dist(mt), trans_dist(mt), rot_dist(mt), rot_dist(mt), rot_dist(mt)};
+        array<double, 6> pose_3d = {trans_dist(mt), trans_dist(mt), trans_dist(mt), rot_dist(mt), rot_dist(mt), rot_dist(mt)};
         poses.push_back(pose_3d);
     }
-    std::array<double, 6> search_point = {trans_dist(mt), trans_dist(mt), trans_dist(mt), search_rot_dist(mt), search_rot_dist(mt), search_rot_dist(mt)};
+    array<double, 6> search_point = {trans_dist(mt), trans_dist(mt), trans_dist(mt), search_rot_dist(mt), search_rot_dist(mt), search_rot_dist(mt)};
+
+    // Quaternion setup
+    vector<array<double, 7>> quat_poses = euler_to_quat(poses);
+    array<double, 7> quat_search_point = euler_to_quat({search_point})[0];
+
+    {
+        //List search
+        auto start = std::chrono::high_resolution_clock::now();                         // CLOCK START
+        vector<std::pair<double,int>> results;
+        for (size_t i = 0; i < number_of_poses; i++)
+        {
+            array<double,6> pose = poses[i];
+            double tranlation_distance = euclidean_distance(search_point[0], search_point[1], search_point[2], pose[0], pose[1], pose[2]);
+            double rot_distance = rotaional_distance(search_point[3], search_point[4], search_point[5], pose[3], pose[4], pose[5]);
+            double pose_distance = pose_metric(tranlation_distance, rot_distance);
+
+            std::pair<double,int>P = std::make_pair(pose_distance, i);
+            results.push_back(P);
+        }
+        std::sort(results.begin(),results.end());
+        auto stop = std::chrono::high_resolution_clock::now();                           // CLOCK END
+
+        auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        performance_listsearch = duration_micro.count();
+    }
+
+    {
+        //Baseline_rotational_Octree
+        auto tree = BaselineRotationalOctree();
+        tree.create(poses, tree_depth, poses_in_leaf_node);
+
+        auto start = std::chrono::high_resolution_clock::now();                             // CLOCK START
+        vector<int> neighbors = tree.getNearestNeighbors(search_point, number_of_neighbors_k);
+        auto stop = std::chrono::high_resolution_clock::now();                              // CLOCK END
+
+        auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        performance_baseline = duration_micro.count();
+    }
+
+    {
+        //TwinTree Container
+        auto tree = TwinOcTrees();
+        tree.create(poses, tree_depth, poses_in_leaf_node);
+
+        auto start = std::chrono::high_resolution_clock::now();                             // CLOCK START
+        vector<std::pair<double,int>> neighbors = tree.getNearestNeighbors(search_point, number_of_neighbors_k);
+        auto stop = std::chrono::high_resolution_clock::now();                              // CLOCK END
+
+        auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        performance_twin_tree_container = duration_micro.count();
+
+    }
+
+    {
+        //Smallest Node Algorithm
+        std::array<double, 6> inspection_space_min = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        std::array<double, 6> inspection_space_max = {100.0, 100.0, 100.0, 359.0, 359.0, 359.0};
+        OrthoTree::BoundingBoxND<6> inspection_space;
+        inspection_space.Min = inspection_space_min;
+        inspection_space.Max = inspection_space_max;
+
+        auto tree = PoseTreePointND<6>();
+        tree.Create(tree, poses, tree_depth, inspection_space, poses_in_leaf_node);
+
+        auto start = std::chrono::high_resolution_clock::now();                             // CLOCK START
+        auto neighbors = tree.GetNearestNeighbors(search_point, number_of_neighbors_k, poses);
+        auto stop = std::chrono::high_resolution_clock::now();                              // CLOCK END
+
+        auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        performance_algorithm = duration_micro.count();
+    }
 
     {
         //Box Distance Algorithm
@@ -134,7 +200,7 @@ void test_setup(int number_of_poses, int tree_depth, int number_of_neighbors_k, 
         inspection_space.Min = inspection_space_min;
         inspection_space.Max = inspection_space_max;
 
-        auto tree = OrthoTree::PoseTreePointV2ND<6>();
+        auto tree = PoseTreePointV2ND<6>();
         tree.Create(tree, poses, tree_depth, inspection_space, poses_in_leaf_node);
 
         auto start = std::chrono::high_resolution_clock::now();                             // CLOCK START
@@ -144,15 +210,77 @@ void test_setup(int number_of_poses, int tree_depth, int number_of_neighbors_k, 
         auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
         performance_algorithm_V2 = duration_micro.count();
     }
+
+    {
+        //Quat List search
+        auto start = std::chrono::high_resolution_clock::now();                         // CLOCK START
+        vector<std::pair<double,int>> results;
+        for (size_t i = 0; i < number_of_poses; i++)
+        {
+            array<double,7> quat_pose = quat_poses[i];
+            auto trans_distance = euclidean_distance(quat_search_point[0], quat_search_point[1], quat_search_point[2], quat_pose[0], quat_pose[1], quat_pose[2]);
+            auto quat_product = inner_product(quat_search_point, quat_pose);
+            auto quat_dis = 180 * (1 - pow(quat_product, 2));
+            auto pose_distance = (trans_distance + quat_dis);
+
+            std::pair<double,int>P = std::make_pair(pose_distance, i);
+            results.push_back(P);
+        }
+        std::sort(results.begin(),results.end());
+        auto stop = std::chrono::high_resolution_clock::now();                           // CLOCK END
+
+        auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        performance_quat_listsearch = duration_micro.count();
+    }
+
+    {
+        //Quaternion Tree
+        std::array<double, 7> inspection_space_min = {0.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0};
+        std::array<double, 7> inspection_space_max = {100.0, 100.0, 100.0, 1.0, 1.0, 1.0, 1.0};
+        OrthoTree::BoundingBoxND<7> inspection_space;
+
+        auto tree = QuaternionTreePointND<7>();
+        tree.Create(tree, quat_poses, tree_depth, inspection_space, poses_in_leaf_node);
+
+        auto start = std::chrono::high_resolution_clock::now();                             // CLOCK START
+        auto neighbors = tree.GetNearestNeighbors(quat_search_point, number_of_neighbors_k, quat_poses);
+        auto stop = std::chrono::high_resolution_clock::now();                              // CLOCK END
+
+        auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        performance_quaternion_tree = duration_micro.count();
+
+    }
+
+    {
+        //Standard 6-Dimensional Tree
+
+        std::array<double, 6> inspection_space_min = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        std::array<double, 6> inspection_space_max = {100.0, 100.0, 100.0, 359.0, 359.0, 359.0};
+        OrthoTree::BoundingBoxND<6> inspection_space;
+        inspection_space.Min = inspection_space_min;
+        inspection_space.Max = inspection_space_max;
+
+        auto tree = TreePointND<6>();
+        tree.Create(tree, poses, tree_depth, inspection_space, poses_in_leaf_node);
+
+        auto start = std::chrono::high_resolution_clock::now();                             // CLOCK START
+        auto neighbors = tree.GetNearestNeighbors(search_point, number_of_neighbors_k, poses);
+        auto stop = std::chrono::high_resolution_clock::now();                              // CLOCK END
+
+        auto duration_micro = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        performance_6_dim_tree = duration_micro.count();
+    }
+
+    csv_file.newRow() << performance_listsearch << performance_baseline << performance_twin_tree_container << performance_algorithm << performance_algorithm_V2 << performance_quat_listsearch << performance_quaternion_tree << performance_6_dim_tree << number_of_poses << tree_depth << number_of_neighbors_k << poses_in_leaf_node << number_of_test;
 }
 
 void do_histograms()
 {
     //Parameters as vectors to permutate many combinations for mutliple Histograms
-    std::vector<int> number_of_poses = {30000};
-    std::vector<int> tree_depth = {9};
-    std::vector<int> number_of_neighbors_k = {3};
-    std::vector<int> poses_in_leaf_node = {21};
+    vector<int> number_of_poses = {30000};
+    vector<int> tree_depth = {9};
+    vector<int> number_of_neighbors_k = {3};
+    vector<int> poses_in_leaf_node = {21};
     int number_of_tests = 100;
 
     std::cout << "-----Test Setup-----" << std::endl;
